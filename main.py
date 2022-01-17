@@ -12,10 +12,34 @@ from sklearn.metrics import mean_absolute_error
 import numpy as np
 
 
+def cut_quantiles(df):
+    Q1 = df.quantile(q=0.25)
+    Q3 = df.quantile(q=0.75)
+    IRQ = Q3 - Q1
+    left_cond = Q1 - 1.5 * IRQ
+    right_cond = Q3 + 1.5 * IRQ
+    cond_train = np.logical_and(df > left_cond, df < right_cond)
+
+    return df[cond_train]
+
+
 class FluidPredictor:
     def __init__(self):
         pd.set_option('display.expand_frame_repr', False)
         self.db = pd.read_csv('2021.12.21_project_data.csv', delimiter="\t")
+        self.interleukina = ['Interleukina – 11B',
+                                  'Interleukina – 11P',
+                                  'Interleukina – 16B',
+                                  'Interleukina – 16P',
+                                  'Interleukina – 24B',
+                                  'Interleukina – 24P',
+                                  'Interleukina – 31B',
+                                  'Interleukina – 31P',
+                                  'Interleukina – 36B',
+                                  'Interleukina – 36P',
+                                  'Interleukina – 44B',
+                                  'Interleukina – 44P']
+
         self.predict_columns = ['16-B',
                                 '16-P',
                                 '11-B',
@@ -59,17 +83,40 @@ class FluidPredictor:
     def preprocessing(self):
         self.db.drop(columns=['Unnamed: 0'], inplace=True)
         missing_columns = list(self.db.isnull().sum()[self.db.isnull().sum() > 0].index)
-        db_w0_missing = self.db.drop(columns=missing_columns)
-        db_w0_missing[['SBI', 'API']] = db_w0_missing[['SBI', 'API']].applymap(lambda x: x.replace('%', '')).astype(
+        db_preproc = self.db
+        db_preproc[['SBI', 'API']] = db_preproc[['SBI', 'API']].applymap(lambda x: x.replace('%', '')).astype(
             float)
         # boolean to int questions
-        db_w0_missing[self.questions] = db_w0_missing[self.questions].astype(int)
-        # applying scalers
-        db_w0_missing[['API', 'SBI', 'wiek']] = MinMaxScaler().fit_transform(db_w0_missing[['API', 'SBI', 'wiek']])
+        db_preproc[self.questions] = db_preproc[self.questions].astype(int)
 
-        return db_w0_missing
+        # add feature that tell us if the aperature is healthy or not
+        for ppd in self.PPD:
+            name = ppd + ' - healthy'
+            db_preproc[name] = 0
+
+        for ppd in self.PPD:
+            name = ppd + ' - healthy'
+            indexes = db_preproc.loc[db_preproc[ppd] < 2].index
+            db_preproc[name].iloc[indexes] = 1
+
+        # clean interleukina
+        interleukina_outliered = []
+        for i in range(len(missing_columns)):
+            temp = db_preproc[self.interleukina[i]].dropna()
+            new_name = self.interleukina[i] + "_outliered"
+            interleukina_outliered.append(new_name)
+            interleukina_fixed = cut_quantiles(temp)
+            db_preproc[new_name] = interleukina_fixed
+
+        db_preproc.drop(self.interleukina, axis=1, inplace=True)
+        interleukina_mean_fill = db_preproc[interleukina_outliered].mean().to_dict()
+        db_preproc.fillna(value=interleukina_mean_fill, inplace=True)
+        self.interleukina = interleukina_outliered
+
+        return db_preproc
 
     def encoding_data(self, df):
+        df[['API', 'SBI', 'wiek'] + self.interleukina] = MinMaxScaler().fit_transform(df[['API', 'SBI', 'wiek'] + self.interleukina])
         # oht the plec column
         cat_variables = ['plec', *self.questions]
         for cat in cat_variables:
@@ -81,7 +128,6 @@ class FluidPredictor:
             # delete actual plec kolumn and add encoded
             df.drop(cat, axis=1, inplace=True)
             df = pd.concat([df, encoded_df], axis=1)
-            # modify api columns
 
         return df
 
